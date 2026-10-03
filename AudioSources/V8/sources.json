@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "retrieved": "2026-10-03",
+  "sourceFormat": "Public HQ MP3 previews, not original lossless recordings",
+  "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "sources": [
+    {
+      "id": "classic-idle",
+      "file": "348430-classic-v8-idle.mp3",
+      "author": "jackthemurray",
+      "title": "Classic Car Idle.wav",
+      "page": "https://freesound.org/people/jackthemurray/sounds/348430/",
+      "download": "https://cdn.freesound.org/previews/348/348430_5618682-hq.mp3",
+      "license": "CC0 1.0",
+      "sha256": "dad88d0406d6f454a99ced2ec0d765ab2a72ad711394c848bc9c33ed160ee63e"
+    },
+    {
+      "id": "v8-rev",
+      "file": "651534-v8-rev.mp3",
+      "author": "overmedium",
+      "title": "v8 engine rev.wav",
+      "page": "https://freesound.org/people/overmedium/sounds/651534/",
+      "download": "https://cdn.freesound.org/previews/651/651534_2396512-hq.mp3",
+      "license": "CC0 1.0",
+      "sha256": "65d7f1d60ecc276a48ea974a265bbee0715d6b2e0bd0081a45c57362a61a470c"
+    },
+    {
+      "id": "corvette",
+      "file": "360451-corvette-c5.mp3",
+      "author": "Galarne",
+      "title": "Corvette C5 INOX 2001.flac",
+      "page": "https://freesound.org/people/Galarne/sounds/360451/",
+      "download": "https://cdn.freesound.org/previews/360/360451_27825-hq.mp3",
+      "license": "CC0 1.0",
+      "sha256": "242d492ba36a5931c5cb58f6e87d8a0fddae890a6be5c626c17451aaa19652d5"
+    }
+  ]
+}
