@@ -1,0 +1,24 @@
+{
+  "id": "ferrari-f355",
+  "folder": "Ferrari_F355",
+  "name": "Ferrari F355 flat-plane V8",
+  "events": 4,
+  "refs": [
+    1000,
+    1800,
+    3200,
+    4500,
+    5900,
+    7100,
+    8300
+  ],
+  "redline": 8500,
+  "body": 420,
+  "ring": 1800,
+  "cutoff": 8000,
+  "delay": 0.0026,
+  "clarity": 0.92,
+  "intake": 0.35,
+  "grit": 0.06,
+  "seed": 500
+}

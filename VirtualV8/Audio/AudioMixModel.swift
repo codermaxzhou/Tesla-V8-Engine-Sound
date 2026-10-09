@@ -2,7 +2,7 @@ import Foundation
 
 enum AudioLayer: String, CaseIterable, Identifiable {
     case idle, lowRPM, midRPM, highRPM, highLoad, intake, overrun
-    case shiftTransient, revMatch, backfire, limiter
+    case shiftTransient, revMatch, backfire, limiter, turboSpool, pressureRelease
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -61,10 +61,15 @@ struct AudioMixModel {
     private var limiterClock = 0.0
     private var pendingPops: [Double] = []
     private var shiftVariant = 0
+    private(set) var turboPressure = 0.0
+    private var releaseArmed = false
+    private var releaseClock = 100.0
+    let profile: EngineProfile
     private var randomState: UInt64
 
     // Fresh entropy in the app; an explicit seed makes audio regressions reproducible.
-    init(seed: UInt64 = UInt64.random(in: UInt64.min...UInt64.max)) {
+    init(seed: UInt64 = UInt64.random(in: UInt64.min...UInt64.max), profile: EngineProfile = .americanV8) {
+        self.profile = profile
         randomState = seed
     }
 
@@ -91,29 +96,57 @@ struct AudioMixModel {
         backfireClock += deltaTime
         downshiftBurstClock += deltaTime
         limiterClock += deltaTime
+        releaseClock += deltaTime
         let candidateRPM = audioRPM ?? engine.rpm
         let rpm = candidateRPM.isFinite ? max(0, candidateRPM) : 750
         let master = tuning.isMuted ? 0 : AudioTuning.bounded(tuning.masterVolume)
         let engineLevel = master * AudioTuning.bounded(tuning.engineVolume)
         let exhaust = engineLevel * AudioTuning.bounded(tuning.exhaustVolume)
         let throttle = AudioTuning.bounded(vehicle.estimatedThrottle)
-        let load = AudioTuning.bounded(engine.load)
+        // Perceptual attack bypasses slow drivetrain load convergence. It uses the common
+        // vehicle state, so neither the mixer nor engine needs to know the input source.
+        let audioThrottle = mode == .overrun ? 0 : throttle
+        let attack = audioThrottle > 0.05 && vehicle.accelerationMs2 > 0.4
+            ? min(0.10, max(0, vehicle.jerkMs3) / 80) : 0
+        let load = max(AudioTuning.bounded(engine.load), min(1, audioThrottle * 0.7 + attack))
+        let intake = engineLevel * AudioTuning.bounded(tuning.intakeVolume)
+        let storedPressure = turboPressure
+        let rpmFactor = min(1, max(0, (engine.rpm - 1500) / 2500))
+        let pressureTarget = profile.hasTurbo && engine.isRunning ? throttle * load * rpmFactor : 0
+        turboPressure += (pressureTarget - turboPressure) * (1 - exp(-(pressureTarget > turboPressure ? 1.8 : 5.5) * deltaTime))
+        if profile.hasTurbo, throttle > 0.45, turboPressure > 0.18 { releaseArmed = true }
+        let newUpshift = transmission.isShifting && !wasShifting && transmission.shiftType == .upshift
+        let shouldRelease = profile.hasTurbo && engine.isRunning && storedPressure > 0.12 && releaseClock >= 0.45
+            && ((releaseArmed && (throttle < 0.2 || vehicle.didDetectThrottleLift)) || newUpshift)
         let duck = transmission.isShifting && transmission.shiftType == .upshift ? 0.3 : 1
-        var targets = Self.rpmWeights(rpm).mapValues { $0 * exhaust * (0.4 + load * 0.6) }
+        var targets = Self.rpmWeights(rpm / profile.redlineScale).mapValues { $0 * exhaust * (0.4 + load * 0.6) }
         targets[.highLoad] = exhaust * load * duck * 0.65
-        targets[.intake] = engineLevel * AudioTuning.bounded(tuning.intakeVolume) * throttle * 0.5
+        targets[.intake] = engineLevel * AudioTuning.bounded(tuning.intakeVolume) * audioThrottle * 0.5
         let overrun = mode == .overrun || (mode == .idle && throttle < 0.15 && rpm > 1200)
         targets[.overrun] = overrun ? exhaust * min(1, rpm / 4000) * 0.65 : 0
         targets[.shiftTransient] = engineLevel * AudioTuning.bounded(tuning.shiftTransientVolume)
         targets[.revMatch] = targets[.shiftTransient]
         targets[.backfire] = min(1, exhaust * AudioTuning.bounded(tuning.backfireAmount) * 2)
         targets[.limiter] = exhaust * 0.5
+        targets[.turboSpool] = profile.hasTurbo ? intake * turboPressure * 0.8 : 0
+        targets[.pressureRelease] = profile.hasTurbo ? intake : 0
         for layer in AudioLayer.allCases {
             let target = engine.isRunning ? targets[layer, default: 0] : 0
-            gains[layer, default: 0] += (target - gains[layer, default: 0]) * (1 - exp(-12 * deltaTime))
+            let fastAttack = (layer == .highLoad || layer == .intake) && target > gains[layer, default: 0]
+            gains[layer, default: 0] += (target - gains[layer, default: 0]) * (1 - exp(-(fastAttack ? 35 : 12) * deltaTime))
         }
         var events: [AudioEvent] = []
         if engine.isRunning {
+            if shouldRelease {
+                releaseClock = 0
+                releaseArmed = false
+                turboPressure *= 0.25
+                if !tuning.isMuted && intake > 0.0001 {
+                    events.append(AudioEvent(layer: .pressureRelease,
+                        asset: "pressure_release_\(1 + Int(random() * 2))",
+                        gain: gains[.pressureRelease, default: 0] * (0.55 + 0.45 * storedPressure)))
+                }
+            }
             let amount = AudioTuning.bounded(tuning.backfireAmount)
             let backfire = BackfireController(configuration: .forMode(drivingMode))
             var downshiftCount = 0
@@ -130,7 +163,8 @@ struct AudioMixModel {
                 }
             }
             let liftCount = backfire.burstCount(
-                currentThrottle: throttle, previousThrottle: previousThrottle, rpm: engine.rpm,
+                currentThrottle: vehicle.didDetectThrottleLift ? 0 : throttle,
+                previousThrottle: previousThrottle, rpm: engine.rpm,
                 engineMode: mode, deceleration: vehicle.accelerationMs2,
                 timeSinceLastBackfire: backfireClock,
                 amount: amount, roll: random(), burstRoll: random())
@@ -154,7 +188,7 @@ struct AudioMixModel {
                 events.append(AudioEvent(layer: .backfire, asset: "pop_\(1 + Int(random() * 3))",
                                          gain: gains[.backfire, default: 0]))
             }
-            if engine.isOnLimiter || engine.rpm >= 6550 {
+            if engine.isOnLimiter || engine.rpm >= profile.hardLimiterRPM - 150 {
                 if limiterClock >= 0.13 + random() * 0.09 {
                     limiterClock = 0
                     events.append(AudioEvent(layer: .limiter, asset: "limiter", gain: gains[.limiter, default: 0]))
@@ -165,6 +199,9 @@ struct AudioMixModel {
             previousThrottle = 0
             backfireClock = 100
             downshiftBurstClock = 100
+            turboPressure = 0
+            releaseArmed = false
+            releaseClock = 100
         }
         previousThrottle = engine.isRunning ? throttle : 0
         wasShifting = engine.isRunning && transmission.isShifting

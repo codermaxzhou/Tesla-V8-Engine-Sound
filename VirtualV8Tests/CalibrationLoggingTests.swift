@@ -13,7 +13,7 @@ final class CalibrationLoggingTests: XCTestCase {
             $0.audio.engineVolume = 0.64
         }
         first.audio.tuning.intakeVolume = 0.28 // Existing tuning controls also persist.
-        first.sensors.tuning.throttleSmoothing = 0.72
+        first.sensors.tuning.throttleAttackAlpha = 0.62
         let custom = first.calibration.values
         first.applyPreset(.track)
         XCTAssertEqual(first.calibration.customValues, custom)
@@ -23,7 +23,7 @@ final class CalibrationLoggingTests: XCTestCase {
         second.restoreCustomCalibration()
         XCTAssertEqual(second.calibration.values, custom)
         XCTAssertEqual(second.audio.tuning.engineVolume, 0.64)
-        XCTAssertEqual(second.sensors.tuning.throttleSmoothing, 0.72)
+        XCTAssertEqual(second.sensors.tuning.throttleAttackAlpha, 0.62)
         let third = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
         XCTAssertNil(third.calibration.preset)
         XCTAssertEqual(third.calibration.values, custom)
@@ -42,7 +42,7 @@ final class CalibrationLoggingTests: XCTestCase {
         settings.update {
             $0.engine.inertia = 0; $0.engine.rpmResponse = .nan
             $0.audio.engineVolume = 10; $0.audio.backfireAmount = -1
-            $0.estimator.throttleSensitivity = 20; $0.estimator.accelerationSmoothing = -2
+            $0.estimator.throttleSensitivity = 20; $0.estimator.accelerationSmoothingAlpha = -2
             $0.transmission.shiftDuration = .infinity
         }
         XCTAssertEqual(settings.values.engine.inertia, 0.5)
@@ -50,7 +50,7 @@ final class CalibrationLoggingTests: XCTestCase {
         XCTAssertEqual(settings.values.audio.engineVolume, 1)
         XCTAssertEqual(settings.values.audio.backfireAmount, 0)
         XCTAssertEqual(settings.values.estimator.throttleSensitivity, 1.5)
-        XCTAssertEqual(settings.values.estimator.accelerationSmoothing, 0.05)
+        XCTAssertEqual(settings.values.estimator.accelerationSmoothingAlpha, 0.1)
         XCTAssertEqual(settings.values.transmission.shiftDuration, 1)
         XCTAssertLessThan(CalibrationPreset.comfort.values.audio.masterVolume, CalibrationPreset.track.values.audio.masterVolume)
         XCTAssertLessThan(CalibrationPreset.comfort.values.engine.rpmResponse, CalibrationPreset.sport.values.engine.rpmResponse)
@@ -74,10 +74,10 @@ final class CalibrationLoggingTests: XCTestCase {
         controller.applyPreset(.track)
         controller.updateCalibration { $0.engine.rpmResponse = 2 }
         controller.audio.tuning.engineVolume = 0.1
-        controller.sensors.tuning.throttleSmoothing = 1.5
+        controller.sensors.tuning.throttleAttackAlpha = 1.5
         XCTAssertEqual(controller.calibration.values, previous)
         XCTAssertEqual(controller.audio.tuning.engineVolume, previous.audio.engineVolume)
-        XCTAssertEqual(controller.sensors.tuning.throttleSmoothing, previous.estimator.throttleSmoothing)
+        XCTAssertEqual(controller.sensors.tuning.throttleAttackAlpha, previous.estimator.throttleAttackAlpha)
         controller.selectInputMode(.simulation)
         controller.updateCalibration { $0.engine.rpmResponse = 1.8 }
         XCTAssertEqual(controller.calibration.values.engine.rpmResponse, 1.8)
@@ -160,7 +160,7 @@ final class CalibrationLoggingTests: XCTestCase {
         let logger = DriveLogger()
         logger.start()
         logger.sample(deltaTime: 0.2, timestamp: Date(timeIntervalSince1970: 1234),
-                      vehicle: VehicleState(speedKmh: 83.5, accelerationMs2: 2.2, smoothedAccelerationMs2: 1.8, jerkMs3: -0.5, estimatedThrottle: 0.7),
+                      vehicle: VehicleState(speedKmh: 83.5, accelerationMs2: 2.2, smoothedAccelerationMs2: 1.8, jerkMs3: -0.5, estimatedThrottle: 0.7, gpsSpeedKmh: 82, predictedSpeedKmh: 83.5, rawEstimatedThrottle: 0.8, gpsSpeedAccuracy: 0.3, isGpsValid: true),
                       engine: EngineState(rpm: 4200), transmission: TransmissionState(), mode: .fullLoad, backfire: true)
         logger.stop()
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -170,13 +170,18 @@ final class CalibrationLoggingTests: XCTestCase {
         XCTAssertEqual(csv, logger.csv())
         let lines = csv.split(separator: "\n")
         XCTAssertEqual(lines.count, 2)
-        XCTAssertEqual(lines[0], "timestamp,speedKmh,rawAcceleration,filteredAcceleration,jerk,estimatedThrottle,rpm,gear,targetGear,engineMode,shiftType,backfireEvent")
+        XCTAssertEqual(lines[0], "timestamp,speedKmh,rawAcceleration,filteredAcceleration,jerk,estimatedThrottle,rpm,gear,targetGear,engineMode,shiftType,backfireEvent,gpsSpeed,predictedSpeed,gpsSpeedAccuracy,rawThrottle,filteredThrottle")
         let fields = lines[1].split(separator: ",")
-        XCTAssertEqual(fields.count, 12)
+        XCTAssertEqual(fields.count, 17)
         XCTAssertEqual(fields[1], "83.50000")
         XCTAssertEqual(fields[5], "0.70000")
         XCTAssertEqual(fields[6], "4200.00000")
         XCTAssertEqual(fields[11], "true")
+        XCTAssertEqual(fields[12], "82.00000")
+        XCTAssertEqual(fields[13], "83.50000")
+        XCTAssertEqual(fields[14], "0.30000")
+        XCTAssertEqual(fields[15], "0.80000")
+        XCTAssertEqual(fields[16], "0.70000")
         XCTAssertTrue(fields[0].hasSuffix("Z"))
         XCTAssertEqual(logger.exportURL, url)
     }

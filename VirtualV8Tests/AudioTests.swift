@@ -3,6 +3,302 @@ import AVFoundation
 @testable import VirtualV8
 
 final class AudioTests: XCTestCase {
+    func testClassicBanksLoadMatchMetadataAndHaveDistinctPCM() throws {
+        var idleSignatures = Set<Data>()
+        for profile in EngineProfile.classics {
+            let bank = AudioSampleBank(profile: profile)
+            XCTAssertTrue(bank.fallbackAssets.isEmpty, profile.name)
+            XCTAssertEqual(bank.loops.count, profile.hasTurbo ? 11 : 10)
+            XCTAssertEqual(bank.loops.prefix(7).map(\.referenceRPM), profile.audioReferences)
+            for name in bank.loops.map(\.asset) + bank.transients {
+                let buffer = bank.buffer(named: name)!
+                XCTAssertEqual(buffer.format.sampleRate, 48000); XCTAssertEqual(buffer.format.channelCount, 1)
+                let data = buffer.floatChannelData![0]
+                var peak: Float = 0; var sum = 0.0
+                for index in 0..<Int(buffer.frameLength) { peak = max(peak, abs(data[index])); sum += Double(data[index]) }
+                XCTAssertGreaterThan(peak, 0.01, profile.name + " / " + name)
+                XCTAssertLessThanOrEqual(peak, 0.321)
+                if bank.loops.contains(where: { $0.asset == name }) {
+                    XCTAssertGreaterThan(buffer.frameLength, 48000 * 5)
+                    XCTAssertLessThan(abs(sum / Double(buffer.frameLength)), 0.001)
+                    XCTAssertLessThan(abs(data[0] - data[Int(buffer.frameLength) - 1]), 0.08)
+                }
+            }
+            let idle = bank.buffer(named: "idle")!
+            idleSignatures.insert(Data(bytes: idle.floatChannelData![0], count: 48000 * MemoryLayout<Float>.size))
+        }
+        XCTAssertEqual(idleSignatures.count, 6, "Every new bank must have distinct waveform data")
+        XCTAssertEqual(EngineProfile.lexusLFA.firingEventsPerRevolution, 5)
+        XCTAssertEqual(EngineProfile.murcielago.firingEventsPerRevolution, 6)
+        XCTAssertEqual(EngineProfile.mazdaRX7.cylinders, 0)
+        XCTAssertEqual(EngineProfile.mazdaRX7.firingEventsPerRevolution, 2)
+    }
+
+    func testRotaryMissingSamplesHaveAudibleFallback() throws {
+        let empty = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
+        let bank = AudioSampleBank(directory: empty, profile: .mazdaRX7)
+        XCTAssertEqual(bank.fallbackAssets.count, 20)
+        let idle = bank.buffer(named: "idle")!
+        let data = idle.floatChannelData![0]
+        let peak = (0..<Int(idle.frameLength)).map { abs(data[$0]) }.max()!
+        XCTAssertGreaterThan(peak, 0.05, "Rotary fallback must use rotor events, not zero cylinders")
+    }
+
+    @MainActor func testAllSixClassicDemosRenderShiftsHighRPMAndReturnToIdle() throws {
+        for profile in EngineProfile.classics {
+            let controller = SimulationController(automaticallyTicks: false, audioOutput: .offline)
+            controller.selectProfile(profile); controller.drivingMode = .track
+            controller.updateCalibration { $0.audio.masterVolume = 1; $0.audio.intakeVolume = 1; $0.audio.exhaustVolume = 1; $0.audio.backfireAmount = 1 }
+            controller.startDemo()
+            var peak: Float = 0; var maximumRPM = 0.0; var upshifts = 0; var downshifts = 0; var releases = 0
+            let dt = 1024.0 / 48000
+            for _ in 0..<Int(44 / dt) {
+                controller.advance(seconds: dt)
+                maximumRPM = max(maximumRPM, controller.engine.rpm)
+                upshifts += controller.audio.lastEvents.filter { $0.layer == .shiftTransient }.count
+                downshifts += controller.audio.lastEvents.filter { $0.layer == .revMatch }.count
+                releases += controller.audio.lastEvents.filter { $0.layer == .pressureRelease }.count
+                XCTAssertTrue((1...8).contains(controller.transmission.currentGear))
+                let buffer = try controller.audio.render(frameCount: 1024)
+                for index in 0..<Int(buffer.frameLength) {
+                    let value = buffer.floatChannelData![0][index]
+                    XCTAssertTrue(value.isFinite); peak = max(peak, abs(value))
+                }
+            }
+            XCTAssertGreaterThan(maximumRPM, profile.redlineRPM * 0.9, profile.name)
+            XCTAssertLessThanOrEqual(maximumRPM, profile.hardLimiterRPM)
+            XCTAssertGreaterThanOrEqual(upshifts, 2); XCTAssertGreaterThanOrEqual(downshifts, 2)
+            if profile.hasTurbo { XCTAssertGreaterThan(releases, 0) } else { XCTAssertEqual(releases, 0) }
+            XCTAssertGreaterThan(peak, 0.01); XCTAssertLessThan(peak, 0.95)
+            XCTAssertEqual(controller.audio.startCount, 1)
+            XCTAssertTrue(controller.audio.fallbackAssets.isEmpty)
+            XCTAssertNil(controller.audio.errorMessage)
+            XCTAssertEqual(controller.operatingMode, .idle)
+            XCTAssertEqual(controller.engine.rpm, profile.idleRPM, accuracy: 2)
+            controller.stopEngine(); controller.audio.shutdown()
+        }
+    }
+
+    @MainActor func testAMGBankIsDistinctAndDemoRendersTurboAndPops() throws {
+        let bank = AudioSampleBank(profile: .amgGTR)
+        let american = AudioSampleBank()
+        XCTAssertTrue(bank.fallbackAssets.isEmpty)
+        XCTAssertEqual(bank.loops.count, 11)
+        for name in bank.loops.map(\.asset) + bank.transients {
+            let buffer = bank.buffer(named: name)!
+            var peak: Float = 0; var sum = 0.0
+            let data = buffer.floatChannelData![0]
+            for index in 0..<Int(buffer.frameLength) { peak = max(peak, abs(data[index])); sum += Double(data[index]) }
+            XCTAssertGreaterThan(peak, 0.01); XCTAssertLessThanOrEqual(peak, 0.321)
+            XCTAssertEqual(buffer.format.sampleRate, 48000)
+            if bank.loops.contains(where: { $0.asset == name }) {
+                XCTAssertGreaterThan(buffer.frameLength, 48000 * 5)
+                XCTAssertLessThan(abs(sum / Double(buffer.frameLength)), 0.001)
+                XCTAssertLessThan(abs(data[0] - data[Int(buffer.frameLength) - 1]), 0.08)
+            }
+        }
+        let amgIdle = bank.buffer(named: "idle")!.floatChannelData![0]
+        let americanIdle = american.buffer(named: "idle")!.floatChannelData![0]
+        let difference = (0..<48000).reduce(0.0) { $0 + abs(Double(amgIdle[$1] - americanIdle[$1])) }
+        XCTAssertGreaterThan(difference / 48000, 0.01, "AMG must have distinct PCM rather than a renamed V8 bank")
+        let domain = "VirtualV8.AMG.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let controller = SimulationController(automaticallyTicks: false, audioOutput: .offline, settingsDefaults: defaults)
+        defer { controller.audio.shutdown() }
+        controller.selectProfile(.amgGTR); controller.drivingMode = .track
+        controller.updateCalibration { $0.audio.masterVolume = 1; $0.audio.intakeVolume = 1; $0.audio.exhaustVolume = 1; $0.audio.backfireAmount = 1 }
+        let restored = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
+        XCTAssertEqual(restored.profile, .amgGTR)
+        XCTAssertEqual(restored.audio.profile, .amgGTR)
+        controller.startDemo()
+        var peak: Float = 0; var releases = 0; var pops = 0; var maximumRPM = 0.0
+        let dt = 1024.0 / 48000
+        for _ in 0..<Int(44 / dt) {
+            controller.advance(seconds: dt)
+            maximumRPM = max(maximumRPM, controller.engine.rpm)
+            releases += controller.audio.lastEvents.filter { $0.layer == .pressureRelease }.count
+            pops += controller.audio.lastEvents.filter { $0.layer == .backfire }.count
+            let buffer = try controller.audio.render(frameCount: 1024)
+            for index in 0..<Int(buffer.frameLength) {
+                let value = buffer.floatChannelData![0][index]
+                XCTAssertTrue(value.isFinite); peak = max(peak, abs(value))
+            }
+        }
+        XCTAssertGreaterThan(maximumRPM, 6500)
+        XCTAssertLessThanOrEqual(maximumRPM, controller.profile.hardLimiterRPM)
+        XCTAssertGreaterThan(releases, 0); XCTAssertGreaterThan(pops, 0)
+        XCTAssertGreaterThan(peak, 0.01); XCTAssertLessThan(peak, 0.95)
+        XCTAssertEqual(controller.audio.startCount, 1)
+        XCTAssertTrue(controller.audio.fallbackAssets.isEmpty)
+        XCTAssertNil(controller.audio.errorMessage)
+        XCTAssertEqual(controller.operatingMode, .idle)
+        XCTAssertEqual(controller.engine.rpm, 750, accuracy: 2)
+    }
+
+    func testSupraTurboSpoolsAndReleasesOnceAfterSmoothedLift() {
+        var mix = AudioMixModel(seed: 2, profile: .supra2JZ)
+        var engine = EngineState(); engine.isRunning = true; engine.rpm = 4500; engine.load = 1
+        var vehicle = VehicleState(); vehicle.estimatedThrottle = 1
+        func tick(mode: EngineOperatingMode = .fullLoad) -> [AudioEvent] {
+            mix.update(engine: engine, vehicle: vehicle, transmission: TransmissionState(),
+                mode: mode, drivingMode: .sport, tuning: AudioTuning(), deltaTime: 1.0 / 60)
+        }
+        _ = tick(); XCTAssertLessThan(mix.turboPressure, 0.05, "Spool must build gradually")
+        for _ in 0..<120 { XCTAssertFalse(tick().contains { $0.layer == .pressureRelease }) }
+        XCTAssertGreaterThan(mix.turboPressure, 0.9)
+        let spooledGain = mix.gains[.turboSpool, default: 0]
+        XCTAssertGreaterThan(spooledGain, 0.1)
+        var releases = 0
+        for frame in 0..<180 {
+            vehicle.estimatedThrottle = max(0, 1 - Double(frame + 1) * 0.05)
+            let events = tick(mode: .overrun)
+            releases += events.filter { $0.layer == .pressureRelease }.count
+        }
+        XCTAssertEqual(releases, 1, "Smoothed lift must release once, without repeating at closed throttle")
+        XCTAssertLessThan(mix.gains[.turboSpool, default: 0], spooledGain * 0.01)
+        engine.isRunning = false; _ = tick(mode: .off)
+        XCTAssertEqual(mix.turboPressure, 0)
+    }
+
+    func testTurboReleaseRequiresBoostAndRespectsMuteAndIntakeVolume() {
+        for profile in EngineProfile.available {
+            for setting in 0..<3 {
+                var mix = AudioMixModel(seed: 2, profile: profile)
+                var engine = EngineState(); engine.isRunning = true; engine.rpm = 4500; engine.load = 1
+                var vehicle = VehicleState(); vehicle.estimatedThrottle = 1
+                var tuning = AudioTuning()
+                if setting == 1 { tuning.isMuted = true }
+                if setting == 2 { tuning.intakeVolume = 0 }
+                for _ in 0..<120 {
+                    _ = mix.update(engine: engine, vehicle: vehicle, transmission: TransmissionState(),
+                        mode: .fullLoad, drivingMode: .sport, tuning: tuning, deltaTime: 1.0 / 60)
+                }
+                vehicle.estimatedThrottle = 0
+                let events = mix.update(engine: engine, vehicle: vehicle, transmission: TransmissionState(),
+                    mode: .overrun, drivingMode: .sport, tuning: tuning, deltaTime: 1.0 / 60)
+                XCTAssertEqual(events.filter { $0.layer == .pressureRelease }.count,
+                    profile.hasTurbo && setting == 0 ? 1 : 0)
+                if !profile.hasTurbo { XCTAssertEqual(mix.gains[.turboSpool], 0) }
+            }
+        }
+        var cold = AudioMixModel(profile: .supra2JZ)
+        var engine = EngineState(); engine.isRunning = true; engine.rpm = 750
+        var transmission = TransmissionState(); transmission.isShifting = true; transmission.shiftType = .upshift
+        let events = cold.update(engine: engine, vehicle: VehicleState(), transmission: transmission,
+            mode: .idle, drivingMode: .sport, tuning: AudioTuning(), deltaTime: 1.0 / 60)
+        XCTAssertFalse(events.contains { $0.layer == .pressureRelease }, "No boost means no release")
+    }
+
+    func testLoadedSupraUpshiftReleasesOnceAndKeepsCooldown() {
+        var mix = AudioMixModel(seed: 2, profile: .supra2JZ)
+        var engine = EngineState(); engine.isRunning = true; engine.rpm = 4500; engine.load = 1
+        var vehicle = VehicleState(); vehicle.estimatedThrottle = 1
+        var transmission = TransmissionState()
+        func tick() -> [AudioEvent] {
+            mix.update(engine: engine, vehicle: vehicle, transmission: transmission, mode: .fullLoad,
+                drivingMode: .sport, tuning: AudioTuning(), deltaTime: 1.0 / 60)
+        }
+        for _ in 0..<120 { _ = tick() }
+        transmission.isShifting = true; transmission.shiftType = .upshift
+        let events = tick()
+        XCTAssertEqual(events.filter { $0.layer == .pressureRelease }.count, 1)
+        XCTAssertEqual(events.filter { $0.layer == .shiftTransient }.count, 1)
+        vehicle.estimatedThrottle = 0
+        for _ in 0..<20 { XCTAssertFalse(tick().contains { $0.layer == .pressureRelease }) }
+    }
+
+    @MainActor func testSupraBankAndFullDemoRenderIncludingPressureRelease() throws {
+        let bank = AudioSampleBank(profile: .supra2JZ)
+        XCTAssertTrue(bank.fallbackAssets.isEmpty)
+        XCTAssertEqual(bank.loops.count, 11)
+        for name in bank.loops.map(\.asset) + bank.transients {
+            let buffer = bank.buffer(named: name)!
+            XCTAssertEqual(buffer.format.sampleRate, 48000)
+            XCTAssertGreaterThan(buffer.frameLength, 0)
+        }
+        let controller = SimulationController(automaticallyTicks: false, audioOutput: .offline)
+        defer { controller.audio.shutdown() }
+        controller.selectProfile(.supra2JZ); controller.drivingMode = .sport
+        controller.updateCalibration { $0.audio.masterVolume = 1; $0.audio.intakeVolume = 1; $0.audio.exhaustVolume = 1; $0.audio.backfireAmount = 1 }
+        controller.startDemo()
+        let dt = 1024.0 / 48000
+        var peak: Float = 0; var releases = 0
+        for _ in 0..<Int(44 / dt) {
+            controller.advance(seconds: dt)
+            releases += controller.audio.lastEvents.filter { $0.layer == .pressureRelease }.count
+            let buffer = try controller.audio.render(frameCount: 1024)
+            for index in 0..<Int(buffer.frameLength) {
+                let value = buffer.floatChannelData![0][index]
+                XCTAssertTrue(value.isFinite); peak = max(peak, abs(value))
+            }
+        }
+        XCTAssertGreaterThanOrEqual(releases, 2)
+        XCTAssertGreaterThan(peak, 0.01); XCTAssertLessThan(peak, 0.95)
+        XCTAssertEqual(controller.audio.startCount, 1)
+        XCTAssertTrue(controller.audio.fallbackAssets.isEmpty)
+        XCTAssertNil(controller.audio.errorMessage)
+        XCTAssertEqual(controller.operatingMode, .idle)
+        XCTAssertEqual(controller.engine.rpm, 750, accuracy: 2)
+    }
+
+    @MainActor func testS65BankRendersHighRPMAndProfileSwitchResetsGraph() throws {
+        let audio = EngineAudioEngine(outputMode: .offline, randomSeed: 65, profile: .bmwS65)
+        defer { audio.shutdown() }
+        var engine = EngineState(); engine.isRunning = true; engine.load = 0.8
+        var vehicle = VehicleState(); vehicle.estimatedThrottle = 0.8
+        var peak: Float = 0
+        for frame in 0..<250 {
+            engine.rpm = 800 + Double(frame) / 249 * 7500
+            audio.update(engine: engine, vehicle: vehicle, transmission: TransmissionState(),
+                mode: .acceleration, drivingMode: .track, deltaTime: 512.0 / 48000)
+            let buffer = try audio.render(frameCount: 512)
+            for index in 0..<Int(buffer.frameLength) { peak = max(peak, abs(buffer.floatChannelData![0][index])) }
+        }
+        XCTAssertTrue(audio.fallbackAssets.isEmpty)
+        XCTAssertNil(audio.errorMessage)
+        XCTAssertEqual(audio.startCount, 1)
+        XCTAssertEqual(audio.compensatedRPM, 8300, accuracy: 1, "BMW audio must not clamp to American RPM limits")
+        XCTAssertGreaterThan(audio.layerGains[.highRPM, default: 0], 0.1)
+        XCTAssertGreaterThan(peak, 0.01); XCTAssertLessThan(peak, 1)
+        audio.selectProfile(.americanV8)
+        XCTAssertEqual(audio.profile, .bmwS65, "Running graph cannot change profile")
+        engine.isRunning = false
+        audio.update(engine: engine, vehicle: vehicle, transmission: TransmissionState(), mode: .off,
+            drivingMode: .track, deltaTime: 512.0 / 48000)
+        audio.selectProfile(.americanV8)
+        engine.isRunning = true; engine.rpm = 750
+        audio.update(engine: engine, vehicle: vehicle, transmission: TransmissionState(), mode: .idle,
+            drivingMode: .comfort, deltaTime: 512.0 / 48000)
+        _ = try audio.render(frameCount: 512)
+        XCTAssertEqual(audio.profile, .americanV8)
+        XCTAssertTrue(audio.fallbackAssets.isEmpty)
+        XCTAssertNil(audio.errorMessage)
+    }
+
+    func testS65SamplesHaveCorrectReferencesAndDifferFromAmericanBank() {
+        let bmw = AudioSampleBank(profile: .bmwS65)
+        let american = AudioSampleBank()
+        XCTAssertTrue(bmw.fallbackAssets.isEmpty)
+        XCTAssertEqual(bmw.loops.filter { $0.layer == .highRPM }.map(\.referenceRPM), [7000, 8200])
+        for sample in bmw.loops {
+            let buffer = bmw.buffer(named: sample.asset)!
+            let data = buffer.floatChannelData![0]
+            var peak: Float = 0; var sum = 0.0
+            for index in 0..<Int(buffer.frameLength) { peak = max(peak, abs(data[index])); sum += Double(data[index]) }
+            XCTAssertLessThanOrEqual(peak, 0.321)
+            XCTAssertLessThan(abs(sum / Double(buffer.frameLength)), 0.001)
+            XCTAssertGreaterThan(buffer.frameLength, 48000 * 5)
+            XCTAssertLessThan(abs(data[0] - data[Int(buffer.frameLength) - 1]), 0.08)
+        }
+        let bmwIdle = bmw.buffer(named: "idle")!.floatChannelData![0]
+        let americanIdle = american.buffer(named: "idle")!.floatChannelData![0]
+        let difference = (0..<48000).reduce(0.0) { $0 + abs(Double(bmwIdle[$1] - americanIdle[$1])) }
+        XCTAssertGreaterThan(difference / 48000, 0.01, "BMW bank must have distinct PCM, not renamed American assets")
+    }
+
     func testMaximumBackfireProducesOneIrregularBurstPerDownshift() {
         for drivingMode in DrivingMode.allCases {
             var mix = AudioMixModel(seed: 0x62A8)

@@ -65,7 +65,7 @@ final class EstimatorTests: XCTestCase {
         var time = 5.0
         for _ in 0..<30 { time += dt; _ = estimator.update(now: time, deltaTime: dt) }
         XCTAssertFalse(estimator.state.isStopped)
-        for i in 0..<300 {
+        for i in 0..<2400 {
             time += dt
             if i % 60 == 0 { estimator.ingest(location: gps(0, time), now: time) }
             estimator.ingest(motion: motion(i % 2 == 0 ? 0.1 : -0.1, time), now: time)
@@ -214,6 +214,13 @@ final class EstimatorTests: XCTestCase {
         let controller = SimulationController(automaticallyTicks: false)
         controller.selectInputMode(.realDrive)
         let now = Date().timeIntervalSince1970
+        // Feed a completed straight-line mount calibration before this replay. The
+        // estimator no longer gates fresh motion on the next GPS-derived acceleration.
+        controller.sensors.beginCalibration()
+        for i in 1...210 {
+            let t = now - 6 + Double(i) * 0.02
+            controller.sensors.ingest(motion: motion(3, t), now: t)
+        }
         controller.sensors.ingest(location: gps(15, now - 1), now: now - 1)
         for i in 1...49 {
             let sampleTime = now - 1 + Double(i) * 0.02

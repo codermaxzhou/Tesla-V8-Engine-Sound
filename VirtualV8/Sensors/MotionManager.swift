@@ -36,7 +36,7 @@ import CoreMotion
         manager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, error in
             if let error {
                 let message = error.localizedDescription
-                Task { @MainActor [weak self] in
+                MainActor.assumeIsolated { [weak self] in
                     guard let self, self.isSampling, self.generation == generation else { return }
                     self.stop()
                     self.status = "Motion unavailable: \(message)"
@@ -56,8 +56,9 @@ import CoreMotion
                                         gravity: SensorVector(x: g.x, y: g.y, z: g.z),
                                         horizontalAcceleration: horizontal,
                                         rotationRate: sqrt(rotation.x * rotation.x + rotation.y * rotation.y + rotation.z * rotation.z),
-                                        timestamp: epochOffset + motion.timestamp)
-            Task { @MainActor [weak self] in
+                                        timestamp: epochOffset + motion.timestamp,
+                                        attitude: SensorAttitude(roll: motion.attitude.roll, pitch: motion.attitude.pitch, yaw: motion.attitude.yaw))
+            MainActor.assumeIsolated { [weak self] in
                 guard let self, self.isSampling, self.generation == generation else { return }
                 self.status = "Available"
                 self.onSample?(sample)

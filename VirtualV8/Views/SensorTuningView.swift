@@ -4,8 +4,7 @@ struct SensorTuningView: View {
     @Bindable var sensors: SensorInputController
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Filter time constants • larger values smooth more").font(.caption).foregroundStyle(.secondary)
-            control("Speed smoothing", value: $sensors.tuning.speedSmoothing, range: 0.1...2)
+            Text("Response alphas are tuned above • larger alpha responds faster").font(.caption).foregroundStyle(.secondary)
             control("Stopped duration", value: $sensors.tuning.stoppedDuration, range: 0.5...3)
             HStack {
                 Text("Stopped threshold")

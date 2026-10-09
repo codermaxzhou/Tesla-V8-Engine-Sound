@@ -7,6 +7,11 @@ enum SimulationScenario: String, CaseIterable, Identifiable {
     case liftDownshift = "Lift-Off and Downshift"
     case stopAndGo = "Stop-and-Go"
     case aggressiveSport = "Aggressive Sport Drive"
+    case suddenAcceleration = "Latency A · Sudden Acceleration"
+    case throttleLift = "Latency B · Throttle Lift"
+    case gpsLag = "Latency C · GPS Lag (50 Hz / 1 Hz)"
+    case gpsDropout = "Latency D · GPS Dropout (5 seconds)"
+    var isLatencyTest: Bool { [.suddenAcceleration, .throttleLift, .gpsLag, .gpsDropout].contains(self) }
     var id: String { rawValue }
     var duration: Double { points.last!.time }
 
@@ -24,6 +29,11 @@ enum SimulationScenario: String, CaseIterable, Identifiable {
             Point(time: time, speed: speed, throttle: throttle, brake: brake, label: label)
         }
         switch self {
+        case .suddenAcceleration, .throttleLift, .gpsLag, .gpsDropout:
+            return [p(0,0,0,"Idle / virtual sensors"),p(2,0,0.8,"Motion attack, before GPS"),
+                    p(6,46,0,"Lift / overrun"),p(8,46,0,"Deceleration",0.6),
+                    p(12,0,0,"Stop / GPS reconciliation"),p(45,0,0,"Complete")]
+
         case .city:
             return [p(0,0,0,"Idle"),p(3,0,0.4,"City acceleration"),p(11,50,0.18,"City cruise"),
                     p(18,50,0,"Braking",0.45),p(25,0,0,"Stopped"),p(28,0,0.35,"City acceleration"),
@@ -61,5 +71,57 @@ enum SimulationScenario: String, CaseIterable, Identifiable {
         let fraction = (time - a.time) / (b.time - a.time)
         return DemoFrame(speed: a.speed + (b.speed - a.speed) * fraction,
                          throttle: a.throttle, brake: a.brake, label: a.label)
+    }
+}
+
+
+/// Exercises the SAME estimator used by PhoneSensorInputProvider, with a virtual 50 Hz
+/// motion stream and 1 Hz GPS. Hardware and permissions are never opened.
+struct LatencyScenarioRunner {
+    private(set) var estimator = VehicleStateEstimator()
+    private(set) var motionSamples = 0
+    private(set) var gpsSamples = 0
+    private var elapsed = 0.0
+    private var nextMotion = 0.02
+    private var nextGPS = 1.0
+    init(tuning: EstimatorTuning) {
+        estimator.tuning = tuning
+        estimator.restoreForwardAxis(SensorVector(x: 1, y: 0, z: 0))
+        estimator.ingest(location: LocationSample(speedKmh: 0, timestamp: 0, horizontalAccuracy: 3, speedAccuracy: 0.3), now: 0)
+    }
+    static func acceleration(at time: Double) -> Double {
+        if time >= 2 && time < 6 { return 3.2 }
+        if time >= 8 && time < 12 { return -3.2 }
+        return 0
+    }
+    static func speed(at time: Double) -> Double {
+        if time < 2 { return 0 }
+        if time < 6 { return (time - 2) * 3.2 }
+        if time < 8 { return 12.8 }
+        if time < 12 { return max(0, 12.8 - (time - 8) * 3.2) }
+        return 0
+    }
+    mutating func update(scenario: SimulationScenario, dt: Double, tuning: EstimatorTuning) -> VehicleState {
+        elapsed += dt; estimator.tuning = tuning
+        while nextMotion <= elapsed + 1e-9 {
+            let a = Self.acceleration(at: nextMotion)
+            let vector = SensorVector(x: a, y: 0, z: 0)
+            estimator.ingest(motion: MotionSample(userAcceleration: vector, gravity: SensorVector(x: 0, y: 0, z: -1),
+                horizontalAcceleration: vector, rotationRate: 0, timestamp: nextMotion), now: nextMotion)
+            motionSamples += 1; nextMotion += 0.02
+        }
+        while nextGPS <= elapsed + 1e-9 {
+            if !(scenario == .gpsDropout && nextGPS >= 3 && nextGPS < 8) {
+                let measurementTime = scenario == .gpsLag ? max(0, nextGPS - 1) : nextGPS
+                // First delayed measurement duplicates the bootstrap; omit it.
+                if measurementTime > 0 {
+                    estimator.ingest(location: LocationSample(speedKmh: Self.speed(at: measurementTime) * 3.6,
+                        timestamp: measurementTime, horizontalAccuracy: 3, speedAccuracy: 0.3), now: nextGPS)
+                    gpsSamples += 1
+                }
+            }
+            nextGPS += 1
+        }
+        return estimator.update(now: elapsed, deltaTime: dt)
     }
 }

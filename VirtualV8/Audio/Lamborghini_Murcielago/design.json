@@ -1,0 +1,24 @@
+{
+  "id": "lamborghini-murcielago",
+  "folder": "Lamborghini_Murcielago",
+  "name": "Murcielago 6.2L V12",
+  "events": 6,
+  "refs": [
+    900,
+    1600,
+    2900,
+    4100,
+    5300,
+    6400,
+    7400
+  ],
+  "redline": 7600,
+  "body": 170,
+  "ring": 720,
+  "cutoff": 5600,
+  "delay": 0.0054,
+  "clarity": 0.68,
+  "intake": 0.22,
+  "grit": 0.08,
+  "seed": 200
+}

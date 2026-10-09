@@ -1,0 +1,24 @@
+{
+  "id": "porsche-carrera-gt",
+  "folder": "Porsche_Carrera_GT",
+  "name": "Porsche Carrera GT V10",
+  "events": 5,
+  "refs": [
+    900,
+    1800,
+    3100,
+    4400,
+    5800,
+    7000,
+    8200
+  ],
+  "redline": 8400,
+  "body": 290,
+  "ring": 1100,
+  "cutoff": 6500,
+  "delay": 0.0036,
+  "clarity": 0.7,
+  "intake": 0.38,
+  "grit": 0.105,
+  "seed": 600
+}

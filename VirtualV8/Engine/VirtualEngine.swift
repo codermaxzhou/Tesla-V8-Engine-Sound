@@ -1,12 +1,15 @@
 import Foundation
 
-/// A deliberately simplified naturally aspirated V8, without audio or sensor input.
+/// A deliberately simplified virtual engine, without audio or sensor input.
 struct VirtualEngine {
     var tuning = EngineTuning()
     let configuration: EngineProfile
     private(set) var state = EngineState()
     private(set) var operatingMode: EngineOperatingMode = .off
     private var startupElapsed = 0.0
+    private var throttleTransient = 0.0
+    private var previousThrottle = 0.0
+    private var lifting = false
 
     init(configuration: EngineProfile = .americanV8) {
         self.configuration = configuration
@@ -20,6 +23,7 @@ struct VirtualEngine {
         state.targetRPM = configuration.idleRPM
         state.normalizedRPM = state.rpm / configuration.redlineRPM
         startupElapsed = 0
+        throttleTransient = 0; previousThrottle = 0; lifting = false
         operatingMode = .starting
     }
 
@@ -27,13 +31,21 @@ struct VirtualEngine {
         state = EngineState()
         operatingMode = .off
         startupElapsed = 0
+        throttleTransient = 0; previousThrottle = 0; lifting = false
     }
 
     mutating func update(deltaTime: Double, vehicle: VehicleState,
                          transmission: VirtualTransmission, drivingMode: DrivingMode) {
         guard state.isRunning, deltaTime.isFinite, deltaTime > 0 else { return }
         startupElapsed += deltaTime
-        let throttle = min(1, max(0, vehicle.estimatedThrottle))
+        if vehicle.didDetectThrottleLift { lifting = true }
+        if vehicle.rawEstimatedThrottle > 0.05 || vehicle.estimatedThrottle < 0.02 { lifting = false }
+        let throttle = lifting ? 0 : min(1, max(0, vehicle.estimatedThrottle))
+        if lifting { throttleTransient = 0 }
+        // Pedal attack adds bounded converter flare immediately, independent of GPS speed.
+        throttleTransient = min(450, throttleTransient + max(0, throttle - previousThrottle) * 450)
+        throttleTransient *= exp(-deltaTime / 0.35)
+        previousThrottle = throttle
         state.throttle = approach(state.throttle, throttle, rate: 9 * drivingMode.response, dt: deltaTime)
         let load = state.throttle * (0.35 + min(1, vehicle.speedKmh / 30) * 0.65)
             * (1 - vehicle.brakeInput * 0.25)
@@ -66,6 +78,7 @@ struct VirtualEngine {
             let slipRPM = state.throttle * max(0, 1 - vehicle.speedKmh / 30) * 650
             requestedRPM = freeRPM * (1 - coupling)
                 + max(configuration.idleRPM, wheelRPM + slipRPM) * coupling
+                + throttleTransient * coupling
             if vehicle.isStopped && throttle < 0.02 {
                 rate = 3.5
                 operatingMode = .idle

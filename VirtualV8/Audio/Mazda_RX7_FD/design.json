@@ -1,0 +1,25 @@
+{
+  "id": "mazda-rx7-fd",
+  "folder": "Mazda_RX7_FD",
+  "name": "Mazda RX-7 FD two-rotor",
+  "events": 2,
+  "refs": [
+    850,
+    1800,
+    3100,
+    4400,
+    5600,
+    6800,
+    7800
+  ],
+  "redline": 8000,
+  "turbo": true,
+  "body": 320,
+  "ring": 1250,
+  "cutoff": 6500,
+  "delay": 0.001,
+  "clarity": 0.9,
+  "intake": 0.23,
+  "grit": 0.035,
+  "seed": 400
+}

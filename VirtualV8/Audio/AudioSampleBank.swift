@@ -20,20 +20,69 @@ final class AudioSampleBank {
         AudioSample(asset: "intake", layer: .intake, referenceRPM: 3500),
         AudioSample(asset: "overrun", layer: .overrun, referenceRPM: 3500)
     ]
+    static func samples(for profile: EngineProfile) -> [AudioSample] {
+        if let references = profile.audioReferences, references.count == 7 {
+            let names = ["idle", "low_a", "low_b", "mid_a", "mid_b", "high_a", "high_b"]
+            let layers: [AudioLayer] = [.idle, .lowRPM, .lowRPM, .midRPM, .midRPM, .highRPM, .highRPM]
+            var samples = names.indices.map { AudioSample(asset: names[$0], layer: layers[$0], referenceRPM: references[$0]) }
+            samples += [AudioSample(asset: "load", layer: .highLoad, referenceRPM: references[3]),
+                        AudioSample(asset: "intake", layer: .intake, referenceRPM: references[3]),
+                        AudioSample(asset: "overrun", layer: .overrun, referenceRPM: references[3])]
+            if profile.hasTurbo { samples.append(AudioSample(asset: "turbo_spool", layer: .turboSpool, referenceRPM: references[3])) }
+            return samples
+        }
+        if profile == .amgGTR {
+            return loops + [AudioSample(asset: "turbo_spool", layer: .turboSpool, referenceRPM: 3500)]
+        }
+        if profile == .supra2JZ {
+            return [
+                AudioSample(asset: "idle", layer: .idle, referenceRPM: 750),
+                AudioSample(asset: "low_1500", layer: .lowRPM, referenceRPM: 1500),
+                AudioSample(asset: "low_2600", layer: .lowRPM, referenceRPM: 2600),
+                AudioSample(asset: "mid_3600", layer: .midRPM, referenceRPM: 3600),
+                AudioSample(asset: "mid_4700", layer: .midRPM, referenceRPM: 4700),
+                AudioSample(asset: "high_5700", layer: .highRPM, referenceRPM: 5700),
+                AudioSample(asset: "high_6600", layer: .highRPM, referenceRPM: 6600),
+                AudioSample(asset: "load", layer: .highLoad, referenceRPM: 3600),
+                AudioSample(asset: "intake", layer: .intake, referenceRPM: 3600),
+                AudioSample(asset: "overrun", layer: .overrun, referenceRPM: 3600),
+                AudioSample(asset: "turbo_spool", layer: .turboSpool, referenceRPM: 3600)
+            ]
+        }
+        guard profile == .bmwS65 else { return loops }
+        return [
+            AudioSample(asset: "idle", layer: .idle, referenceRPM: 800),
+            AudioSample(asset: "low_1800", layer: .lowRPM, referenceRPM: 1800),
+            AudioSample(asset: "low_3200", layer: .lowRPM, referenceRPM: 3200),
+            AudioSample(asset: "mid_4500", layer: .midRPM, referenceRPM: 4500),
+            AudioSample(asset: "mid_5800", layer: .midRPM, referenceRPM: 5800),
+            AudioSample(asset: "high_7000", layer: .highRPM, referenceRPM: 7000),
+            AudioSample(asset: "high_8200", layer: .highRPM, referenceRPM: 8200),
+            AudioSample(asset: "load", layer: .highLoad, referenceRPM: 4500),
+            AudioSample(asset: "intake", layer: .intake, referenceRPM: 4500),
+            AudioSample(asset: "overrun", layer: .overrun, referenceRPM: 4500)
+        ]
+    }
+    let loops: [AudioSample]
+    let transients: [String]
+    private let firingEventsPerRevolution: Double
     static let transients = ["shift_up_1", "shift_up_2", "downshift", "pop_1", "pop_2", "pop_3", "limiter"]
     let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
     private var buffers: [String: AVAudioPCMBuffer] = [:]
     private(set) var fallbackAssets: [String] = []
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, profile: EngineProfile = .americanV8) {
+        loops = Self.samples(for: profile)
+        firingEventsPerRevolution = profile.firingEventsPerRevolution
+        transients = Self.transients + (profile.hasTurbo ? ["pressure_release_1", "pressure_release_2"] : [])
         #if SWIFT_PACKAGE
         let resources = Bundle.module.resourceURL
         #else
         let resources = Bundle.main.resourceURL
         #endif
-        let root = directory ?? resources?.appendingPathComponent("V8_62_NA")
-        for name in Self.loops.map(\.asset) + Self.transients {
-            let reference = Self.loops.first { $0.asset == name }?.referenceRPM ?? 3500
+        let root = directory ?? resources?.appendingPathComponent(profile.audioFolder)
+        for name in loops.map(\.asset) + transients {
+            let reference = loops.first { $0.asset == name }?.referenceRPM ?? 3500
             if let url = root?.appendingPathComponent(name + ".wav"), let buffer = try? load(url) {
                 buffers[name] = buffer
             } else {
@@ -74,7 +123,7 @@ final class AudioSampleBank {
         }
         let scale = peak > 0.35 ? 0.35 / peak : 1
         for i in 0..<Int(output.frameLength) { data[i] *= scale }
-        let isLoop = Self.loops.contains { $0.asset == url.deletingPathExtension().lastPathComponent }
+        let isLoop = loops.contains { $0.asset == url.deletingPathExtension().lastPathComponent }
         // Envelope replacements with abrupt edges to prevent buffer-boundary clicks.
         if !isLoop || abs(data[0] - data[Int(output.frameLength) - 1]) > 0.1 {
             let edge = min(480, Int(output.frameLength) / 2)
@@ -90,13 +139,13 @@ final class AudioSampleBank {
     }
 
     private func synthetic(name: String, rpm: Double) -> AVAudioPCMBuffer {
-        let isLoop = Self.loops.contains { $0.asset == name }
+        let isLoop = loops.contains { $0.asset == name }
         let duration = isLoop ? 3.0 : name == "downshift" ? 0.22 : 0.10
         let count = Int(48000 * duration)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
         buffer.frameLength = AVAudioFrameCount(count)
         let data = buffer.floatChannelData![0]
-        let frequency = isLoop ? rpm / 60 * 4 : name.hasPrefix("pop") ? 85 : 160
+        let frequency = isLoop ? rpm / 60 * firingEventsPerRevolution : name.hasPrefix("pop") ? 85 : 160
         for i in 0..<count {
             let t = Double(i) / 48000
             let phase = 2 * Double.pi * frequency * t

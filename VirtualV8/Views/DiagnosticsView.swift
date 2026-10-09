@@ -18,6 +18,7 @@ struct DiagnosticsView: View {
             Section("Audio") {
                 LabeledContent("Audio engine status", value: controller.audio.status)
                 LabeledContent("Audio route", value: controller.audio.routeDescription)
+                LabeledContent("Actual I/O buffer", value: String(format: "%.1f ms", controller.audio.ioBufferDurationMs))
                 LabeledContent("Reported output latency", value: String(format: "%.0f ms", controller.audio.outputLatencyMs))
                 LabeledContent("Audio latency compensation", value: String(format: "%.0f ms", controller.audio.tuning.audioLatencyCompensationMs))
                 LabeledContent("Audio RPM", value: String(format: "%.0f", controller.audio.compensatedRPM))

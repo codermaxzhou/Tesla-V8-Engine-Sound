@@ -34,9 +34,13 @@ struct CalibrationValues: Codable, Equatable {
         value.transmission.downshiftAggressiveness = limit(transmission.downshiftAggressiveness, 0.75...1.3, 1)
         value.transmission.shiftDuration = limit(transmission.shiftDuration, 0.6...1.5, 1)
         value.estimator.throttleSensitivity = limit(estimator.throttleSensitivity, 0.5...1.5, 1)
-        value.estimator.accelerationSmoothing = limit(estimator.accelerationSmoothing, 0.05...1.5, 0.3)
-        value.estimator.throttleSmoothing = limit(estimator.throttleSmoothing, 0.1...1.5, 0.4)
-        value.estimator.speedSmoothing = limit(estimator.speedSmoothing, 0.1...2, 0.8)
+        value.estimator.accelerationSmoothingAlpha = limit(estimator.accelerationSmoothingAlpha, 0.1...0.6, 0.3)
+        value.estimator.jerkSmoothingAlpha = limit(estimator.jerkSmoothingAlpha, 0.1...0.6, 0.25)
+        value.estimator.throttleAttackAlpha = limit(estimator.throttleAttackAlpha, 0.2...0.8, 0.45)
+        value.estimator.throttleReleaseAlpha = limit(estimator.throttleReleaseAlpha, 0.1...0.5, 0.2)
+        value.estimator.gpsCorrectionGain = limit(estimator.gpsCorrectionGain, 0.03...0.25, 0.1)
+        value.estimator.accelerationDeadZone = limit(estimator.accelerationDeadZone, 0.05...0.4, 0.12)
+        value.estimator.jerkThreshold = limit(estimator.jerkThreshold, 0.5...5, 1.5)
         value.estimator.stoppedSpeedKmh = limit(estimator.stoppedSpeedKmh, 1...3, 2.5)
         value.estimator.stoppedDuration = limit(estimator.stoppedDuration, 0.5...3, 1.5)
         value.estimator.gpsHoldDuration = limit(estimator.gpsHoldDuration, 1...5, 3)
@@ -61,7 +65,8 @@ enum CalibrationPreset: String, CaseIterable, Identifiable, Codable {
             values.drivingMode = .comfort
             values.audio.masterVolume = 0.35; values.audio.engineVolume = 0.75
             values.audio.backfireAmount = 0.08
-            values.estimator.accelerationSmoothing = 0.5; values.estimator.throttleSmoothing = 0.6
+            values.estimator.accelerationSmoothingAlpha = 0.2; values.estimator.throttleAttackAlpha = 0.35
+            values.estimator.throttleReleaseAlpha = 0.15
             values.transmission.upshiftAggressiveness = 0.9
             values.transmission.downshiftAggressiveness = 0.9; values.transmission.shiftDuration = 1.1
             values.engine.rpmResponse = 0.85; values.engine.inertia = 1.2
@@ -69,7 +74,7 @@ enum CalibrationPreset: String, CaseIterable, Identifiable, Codable {
             values.drivingMode = .sport
             values.audio.masterVolume = 0.45; values.audio.engineVolume = 0.9
             values.audio.backfireAmount = 0.5; values.audio.intakeVolume = 0.65
-            values.estimator.accelerationSmoothing = 0.25; values.estimator.throttleSmoothing = 0.3
+            values.estimator.accelerationSmoothingAlpha = 0.3; values.estimator.throttleAttackAlpha = 0.45
             values.engine.rpmResponse = 1.2; values.engine.inertia = 0.9
             values.transmission.upshiftAggressiveness = 1.02
             values.transmission.downshiftAggressiveness = 1.15; values.transmission.shiftDuration = 0.9
@@ -78,7 +83,7 @@ enum CalibrationPreset: String, CaseIterable, Identifiable, Codable {
             values.audio.masterVolume = 0.6; values.audio.exhaustVolume = 1
             values.audio.intakeVolume = 0.8; values.audio.backfireAmount = 0.8
             values.estimator.throttleSensitivity = 1.15
-            values.estimator.accelerationSmoothing = 0.18; values.estimator.throttleSmoothing = 0.2
+            values.estimator.accelerationSmoothingAlpha = 0.4; values.estimator.throttleAttackAlpha = 0.6
             values.engine.rpmResponse = 1.5; values.engine.inertia = 0.75
             values.transmission.upshiftAggressiveness = 1.1
             values.transmission.downshiftAggressiveness = 1.3; values.transmission.shiftDuration = 0.75

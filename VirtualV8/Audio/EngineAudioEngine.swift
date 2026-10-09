@@ -14,6 +14,7 @@ final class EngineAudioEngine {
     enum OutputMode { case device, offline, disabled }
     var tuning = AudioTuning() { didSet { onTuningChange?(tuning) } }
     @ObservationIgnored var onTuningChange: ((AudioTuning) -> Void)?
+    private(set) var profile: EngineProfile
     private(set) var lastEvents: [AudioEvent] = []
     private(set) var layerGains: [AudioLayer: Double] = [:]
     private(set) var isActive = false
@@ -26,6 +27,7 @@ final class EngineAudioEngine {
     @ObservationIgnored private let assetDirectory: URL?
     private(set) var routeDescription = "Not active"
     private(set) var outputLatencyMs = 0.0
+    private(set) var ioBufferDurationMs = 0.0
     private(set) var compensatedRPM = 0.0
     var status: String {
         if !foreground { return "Paused — app backgrounded" }
@@ -64,13 +66,15 @@ final class EngineAudioEngine {
         var remaining = 0.0
         var layer: AudioLayer = .shiftTransient
         var gain = 0.0
-        var headroom: Double { layer == .backfire ? 0.6 : 0.35 }
+        var headroom: Double { layer == .backfire ? 0.6 : layer == .pressureRelease ? 0.55 : 0.35 }
     }
 
-    init(outputMode: OutputMode = .device, assetDirectory: URL? = nil, randomSeed: UInt64? = nil) {
-        mix = AudioMixModel(seed: randomSeed ?? UInt64.random(in: UInt64.min...UInt64.max))
+    init(outputMode: OutputMode = .device, assetDirectory: URL? = nil, randomSeed: UInt64? = nil, profile: EngineProfile = .americanV8) {
+        self.profile = profile
+        mix = AudioMixModel(seed: randomSeed ?? UInt64.random(in: UInt64.min...UInt64.max), profile: profile)
         self.outputMode = outputMode
         self.assetDirectory = assetDirectory
+        latencyCompensator.configuration = profile
         guard outputMode == .device else { return }
         observeConfiguration()
         #if os(iOS)
@@ -179,6 +183,16 @@ final class EngineAudioEngine {
         attemptedStart = false
     }
 
+    /// Profile changes are restricted to engine-off configuration by the coordinator.
+    func selectProfile(_ selected: EngineProfile) {
+        guard !wantsRunning, selected != profile else { return }
+        profile = selected
+        mix = AudioMixModel(profile: selected)
+        layerGains = [:]; lastEvents = []
+        latencyCompensator.configuration = selected
+        resetMediaServices()
+    }
+
     func resetMediaServices() {
         lifecycleGeneration += 1
         halt()
@@ -209,6 +223,7 @@ final class EngineAudioEngine {
         routeDescription = session.currentRoute.outputs.map { "\($0.portName) (\($0.portType.rawValue))" }.joined(separator: ", ")
         if routeDescription.isEmpty { routeDescription = "No output route" }
         outputLatencyMs = session.outputLatency * 1000
+        ioBufferDurationMs = session.ioBufferDuration * 1000
         #else
         routeDescription = outputMode == .offline ? "Offline PCM rendering" : "System default output"
         #endif
@@ -236,10 +251,10 @@ final class EngineAudioEngine {
 
     private func prepareGraph() throws {
         guard !graphReady else { return }
-        let bank = AudioSampleBank(directory: assetDirectory)
+        let bank = AudioSampleBank(directory: assetDirectory, profile: profile)
         self.bank = bank
         fallbackAssets = bank.fallbackAssets
-        for sample in AudioSampleBank.loops {
+        for sample in bank.loops {
             let voice = Voice(sample)
             audioEngine.attach(voice.player)
             audioEngine.attach(voice.pitch)
@@ -270,6 +285,7 @@ final class EngineAudioEngine {
                 do {
                     let session = AVAudioSession.sharedInstance()
                     try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                    try? session.setPreferredIOBufferDuration(0.005)
                     try session.setActive(true)
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -350,7 +366,7 @@ final class EngineAudioEngine {
     }
 
     private func sampleWeight(_ sample: AudioSample, rpm: Double) -> Double {
-        let peers = AudioSampleBank.loops.filter { $0.layer == sample.layer }
+        let peers = (bank?.loops ?? []).filter { $0.layer == sample.layer }
         guard peers.count == 2 else { return 1 }
         let t = min(1, max(0, (rpm - peers[0].referenceRPM) / (peers[1].referenceRPM - peers[0].referenceRPM)))
         let blend = t * t * (3 - 2 * t)

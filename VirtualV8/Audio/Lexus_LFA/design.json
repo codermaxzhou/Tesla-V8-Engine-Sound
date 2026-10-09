@@ -1,0 +1,24 @@
+{
+  "id": "lexus-lfa",
+  "folder": "Lexus_LFA",
+  "name": "Lexus LFA V10",
+  "events": 5,
+  "refs": [
+    900,
+    1800,
+    3400,
+    4800,
+    6200,
+    7600,
+    8800
+  ],
+  "redline": 9000,
+  "body": 390,
+  "ring": 1550,
+  "cutoff": 7400,
+  "delay": 0.0018,
+  "clarity": 0.88,
+  "intake": 0.55,
+  "grit": 0.045,
+  "seed": 100
+}

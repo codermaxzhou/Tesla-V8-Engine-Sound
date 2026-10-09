@@ -7,7 +7,21 @@ struct MainView: View {
         NavigationStack {
             Form {
                 Section("Engine Profile") {
-                    Label(controller.profile.name, systemImage: "engine.combustion")
+                    NavigationLink {
+                        EngineProfileSelectionView(controller: controller)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(controller.profile.name).foregroundStyle(.primary)
+                            Text("Choose engine profile").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(!controller.canCalibrate)
+                    .accessibilityIdentifier("engine-profile-selector")
+                    if !controller.canCalibrate { Text("Configure engine parameters while parked.").font(.caption).foregroundStyle(.secondary) }
+                    if let description = controller.profile.soundDescription { Text(description).font(.caption).foregroundStyle(.secondary) }
+                    if controller.profile == .amgGTR { Text("AMG GT R-inspired audio recreation").font(.caption).foregroundStyle(.secondary) }
+                    if controller.profile == .supra2JZ { Text("2JZ-inspired recreation · Intake volume controls turbo whistle and release").font(.caption).foregroundStyle(.secondary) }
+                    if controller.profile == .bmwS65 { Text("S65-inspired audio recreation").font(.caption).foregroundStyle(.secondary) }
                 }
                 Section("Input Mode") {
                     Picker("Input Mode", selection: Binding(get: { controller.inputMode }, set: { controller.selectInputMode($0) })) {

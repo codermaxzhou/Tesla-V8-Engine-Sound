@@ -3,7 +3,7 @@ import Foundation
 /// Bounded control-rate look-ahead for continuous audio, never for drivetrain decisions.
 /// This cannot remove Bluetooth transport latency or predict future pedal/shift events.
 struct AudioLatencyCompensator {
-    let configuration = EngineProfile.americanV8
+    var configuration: EngineProfile = .americanV8
     private var previousRPM: Double?
     mutating func reset() { previousRPM = nil }
     mutating func rpm(for engine: EngineState, milliseconds: Double, deltaTime: Double) -> Double {

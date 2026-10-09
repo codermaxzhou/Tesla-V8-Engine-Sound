@@ -1,0 +1,24 @@
+{
+  "id": "porsche-996-gt3",
+  "folder": "Porsche_996_GT3",
+  "name": "Porsche 996 GT3 flat-six",
+  "events": 3,
+  "refs": [
+    850,
+    1700,
+    3000,
+    4200,
+    5500,
+    6600,
+    7600
+  ],
+  "redline": 7800,
+  "body": 245,
+  "ring": 980,
+  "cutoff": 5200,
+  "delay": 0.0041,
+  "clarity": 0.63,
+  "intake": 0.25,
+  "grit": 0.13,
+  "seed": 300
+}

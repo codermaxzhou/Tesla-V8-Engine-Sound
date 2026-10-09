@@ -1,6 +1,6 @@
 import Foundation
 
-// Pure, deterministic estimator. No framework objects, permissions, timers or UI.
+// Pure complementary estimator: motion drives transients; GPS corrects the speed reference.
 struct VehicleStateEstimator {
     var tuning = EstimatorTuning()
     private(set) var state = VehicleState()
@@ -11,16 +11,19 @@ struct VehicleStateEstimator {
     private(set) var rejectedLocationCount = 0
     private(set) var rejectedMotionCount = 0
     private(set) var forwardAxis: SensorVector?
+    private(set) var calibration = OrientationCalibration()
     private(set) var didDetectLift = false
+    private(set) var motionFrequencyHz = 0.0
+    private(set) var gpsAge = Double.infinity
+    private(set) var motionAge = Double.infinity
+    private(set) var speedUncertaintyMs = 0.0
+    private(set) var predictedSpeedMs = 0.0
     private var motionAverage = SensorVector(x: 0, y: 0, z: 0)
-    private var speedMs = 0.0
-    private var reconcilingSpeed = false
+    private var filteredAcceleration = 0.0
+    private var filteredJerk = 0.0
+    private var throttleEstimator = ThrottleEstimator()
     private var lowSpeedDuration = 0.0
     private var stopped = true
-    private var accelerating = false
-    private var recentAcceleration = 0.0
-    private var liftRemaining = 0.0
-    private var hasUpdated = false
 
     mutating func ingest(location sample: LocationSample, now: TimeInterval) {
         guard now.isFinite, sample.timestamp.isFinite, sample.speedKmh.isFinite,
@@ -36,30 +39,22 @@ struct VehicleStateEstimator {
             let acceleration = (sample.speedKmh - previous.speedKmh) / 3.6 / dt
             guard abs(acceleration) <= 8 else { rejectedLocationCount += 1; return }
             gpsAcceleration = dt <= 3 ? acceleration : 0
-            if dt > tuning.gpsHoldDuration, abs(sample.speedKmh / 3.6 - speedMs) > 2 {
-                reconcilingSpeed = true
-            }
-            // Learn a horizontal forward direction from signed GPS acceleration and the
-            // recent motion average. No assumption about the phone's mounting angle.
-            let magnitude = hypot(motionAverage.x, motionAverage.y)
-            if dt <= 2, abs(gpsAcceleration) > 0.4, magnitude > 0.4,
+            // Automatic sign learning remains as a fallback. Explicit calibration provides
+            // the multi-second direction estimate and can operate without a new GPS fix.
+            let magnitude = motionAverage.magnitude
+            if forwardAxis == nil, !calibration.isCollecting, dt <= 2,
+               abs(gpsAcceleration) > 0.4, magnitude > 0.4,
                abs(magnitude - abs(gpsAcceleration)) < 1.5,
                let motion, now - motion.timestamp < 0.3 {
                 let sign = gpsAcceleration > 0 ? 1.0 : -1.0
-                let candidate = SensorVector(x: sign * motionAverage.x / magnitude,
-                                             y: sign * motionAverage.y / magnitude, z: 0)
-                if let axis = forwardAxis {
-                    // Reject contradictory direction (turning or handling), rather than flip.
-                    if axis.x * candidate.x + axis.y * candidate.y > 0.7 {
-                        let x = axis.x * 0.9 + candidate.x * 0.1
-                        let y = axis.y * 0.9 + candidate.y * 0.1
-                        let length = hypot(x, y)
-                        forwardAxis = SensorVector(x: x / length, y: y / length, z: 0)
-                    }
-                } else { forwardAxis = candidate }
+                forwardAxis = SensorVector(x: sign * motionAverage.x / magnitude,
+                                          y: sign * motionAverage.y / magnitude,
+                                          z: sign * motionAverage.z / magnitude)
+                calibration.markCalibrated()
             }
-        } else {
-            speedMs = sample.speedKmh / 3.6
+        } else if predictedSpeedMs == 0 {
+            // Bootstrap the first absolute speed anchor. Subsequent fixes never snap speed.
+            predictedSpeedMs = sample.speedKmh / 3.6
             stopped = sample.speedKmh < tuning.stoppedSpeedKmh
         }
         location = sample
@@ -70,93 +65,103 @@ struct VehicleStateEstimator {
               (-0.1...0.5).contains(now - sample.timestamp),
               sample.userAcceleration.isFinite, sample.gravity.isFinite,
               sample.horizontalAcceleration.isFinite, sample.rotationRate.isFinite,
+              sample.attitude.map({ $0.roll.isFinite && $0.pitch.isFinite && $0.yaw.isFinite }) ?? true,
               sample.userAcceleration.magnitude <= 12,
               (0.8...1.2).contains(sample.gravity.magnitude), sample.rotationRate < 1.5,
               motion == nil || sample.timestamp > motion!.timestamp else {
             rejectedMotionCount += 1; return
         }
         let dt = motion.map { min(0.1, sample.timestamp - $0.timestamp) } ?? 0.02
-        let alpha = blend(dt, timeConstant: 0.35)
-        motionAverage.x += (sample.horizontalAcceleration.x - motionAverage.x) * alpha
-        motionAverage.y += (sample.horizontalAcceleration.y - motionAverage.y) * alpha
+        let frequency = 1 / max(0.001, dt)
+        motionFrequencyHz += (frequency - motionFrequencyHz) * 0.2
+        let horizontal = sample.horizontalDeviceAcceleration
+        let averageAlpha = sensorBlend(0.1, deltaTime: dt)
+        motionAverage.x += (horizontal.x - motionAverage.x) * averageAlpha
+        motionAverage.y += (horizontal.y - motionAverage.y) * averageAlpha
+        motionAverage.z += (horizontal.z - motionAverage.z) * averageAlpha
+        if let axis = calibration.ingest(sample, gpsAcceleration: gpsAcceleration) { forwardAxis = axis }
         motion = sample
+        // Fallback assumes the phone's upper edge points forward. Project out gravity so
+        // tilted portrait/landscape mounts can still be calibrated in three dimensions.
+        let axis = forwardAxis ?? SensorVector(x: 0, y: 1, z: 0)
+        let projected = horizontal.x * axis.x + horizontal.y * axis.y + horizontal.z * axis.z
+        let safe = location == nil && forwardAxis == nil ? 0 : projected
+        filterAcceleration(safe, dt: dt)
     }
 
-    mutating func resetCalibration() { forwardAxis = nil }
+    mutating func restoreForwardAxis(_ axis: SensorVector?) {
+        guard let axis, axis.isFinite, axis.magnitude > 0.9, axis.magnitude < 1.1 else { return }
+        forwardAxis = axis
+        calibration.markCalibrated()
+    }
+    mutating func beginCalibration() { calibration.start() }
+    mutating func resetCalibration() { forwardAxis = nil; calibration.reset() }
 
     func gpsStatus(now: TimeInterval) -> String {
         guard let location else { return "Waiting for valid speed" }
         let age = now - location.timestamp
         if age <= tuning.gpsHoldDuration { return "Available" }
-        return age <= tuning.gpsHoldDuration + 2 ? "Signal lost — holding" : "Signal lost — decaying"
+        return age <= tuning.gpsHoldDuration + 2 ? "Signal lost — holding" : "Signal lost — predicting"
+    }
+
+    private mutating func filterAcceleration(_ acceleration: Double, dt: Double) {
+        rawAcceleration = max(-8, min(8, acceleration))
+        let previous = filteredAcceleration
+        filteredAcceleration += (rawAcceleration - previous) * sensorBlend(tuning.accelerationSmoothingAlpha, deltaTime: dt)
+        let jerk = max(-40, min(40, (filteredAcceleration - previous) / max(0.001, dt)))
+        filteredJerk += (jerk - filteredJerk) * sensorBlend(tuning.jerkSmoothingAlpha, deltaTime: dt)
     }
 
     mutating func update(now: TimeInterval, deltaTime dt: Double) -> VehicleState {
         guard now.isFinite, dt.isFinite, dt > 0, dt <= 0.25 else { return state }
-        let gpsAge = location.map { max(0, now - $0.timestamp) } ?? .infinity
-        let motionFresh = motion.map { now - $0.timestamp <= 0.25 } ?? false
-        var acceleration = gpsAge <= tuning.gpsHoldDuration ? gpsAcceleration : 0
-        if motionFresh, let axis = forwardAxis, let motion {
-            let projected = motion.horizontalAcceleration.x * axis.x + motion.horizontalAcceleration.y * axis.y
-            acceleration = projected
+        gpsAge = location.map { max(0, now - $0.timestamp) } ?? .infinity
+        let gpsFresh = gpsAge <= tuning.gpsHoldDuration
+        motionAge = motion.map { max(0, now - $0.timestamp) } ?? .infinity
+        let motionFresh = motionAge <= 0.25
+        if !motionFresh {
+            // GPS acceleration is a degraded fallback, never the gate for fresh motion.
+            filterAcceleration(gpsFresh ? gpsAcceleration : 0, dt: dt)
         }
-        // No speed anchor means handheld motion cannot create a moving vehicle.
-        if location == nil || gpsAge > tuning.gpsHoldDuration { acceleration = 0 }
-        rawAcceleration = max(-8, min(8, acceleration))
-        let priorAcceleration = state.smoothedAccelerationMs2
-        let filtered = priorAcceleration + (rawAcceleration - priorAcceleration) * blend(dt, timeConstant: tuning.accelerationSmoothing)
-        let jerk = hasUpdated ? max(-20, min(20, (filtered - priorAcceleration) / dt)) : 0
-        hasUpdated = true
-
-        if let location {
-            if gpsAge <= tuning.gpsHoldDuration {
-                // Integrate only within a small corridor around GPS. Motion supplies the
-                // fast response; GPS bounds drift and provides the absolute speed anchor.
-                speedMs += filtered * dt
-                let gpsMs = location.speedKmh / 3.6
-                let predicted = max(0, gpsMs + gpsAcceleration * min(gpsAge, 1))
-                speedMs += (predicted - speedMs) * blend(dt, timeConstant: tuning.speedSmoothing)
-                // After a long outage the new fix may be far from the decayed speed.
-                // Reconcile through the filter before applying the local drift corridor.
-                if reconcilingSpeed, abs(speedMs - gpsMs) <= 2 { reconcilingSpeed = false }
-                if !reconcilingSpeed {
-                    speedMs = max(max(0, gpsMs - 2), min(gpsMs + 2, speedMs))
-                }
-            } else if gpsAge > tuning.gpsHoldDuration + 2 {
-                speedMs = max(0, speedMs - 0.5 * dt)
+        let acceleration = abs(filteredAcceleration) < tuning.accelerationDeadZone ? 0 : filteredAcceleration
+        let trust = gpsFresh ? 1 : exp(-max(0, gpsAge - 15) / 20)
+        // With a calibrated axis but no GPS yet, allow a guided motion-only launch.
+        let integrationTrust = location == nil ? (forwardAxis == nil ? 0.0 : 1.0) : trust
+        predictedSpeedMs += acceleration * dt * integrationTrust
+        if gpsFresh, let location {
+            // Gain is per second, not per rendered frame. Accuracy weakens a poor fix.
+            let confidence = 1 / max(1, location.speedAccuracy)
+            let gain = min(0.25, max(0.03, tuning.gpsCorrectionGain)) * confidence
+            let blend = 1 - pow(1 - gain, dt)
+            predictedSpeedMs += (location.speedKmh / 3.6 - predictedSpeedMs) * blend
+            speedUncertaintyMs += (location.speedAccuracy - speedUncertaintyMs) * blend
+        } else {
+            speedUncertaintyMs = min(50, speedUncertaintyMs + dt * 0.15)
+            // Only decay when BOTH sensors have been absent for an extended interval.
+            if !motionFresh, gpsAge > tuning.gpsHoldDuration + 2 {
+                predictedSpeedMs -= 0.5 * dt
             }
         }
-        speedMs = max(0, min(250 / 3.6, speedMs))
-        let speedKmh = speedMs * 3.6
-        if speedKmh < tuning.stoppedSpeedKmh {
+        predictedSpeedMs = max(0, min(250 / 3.6, predictedSpeedMs))
+        let speed = predictedSpeedMs * 3.6
+        let launching = motionFresh && rawAcceleration > max(0.4, tuning.accelerationDeadZone * 2)
+        if launching || speed > tuning.stoppedSpeedKmh + 1 {
+            stopped = false; lowSpeedDuration = 0
+        } else if speed < tuning.stoppedSpeedKmh {
             lowSpeedDuration += dt
             if lowSpeedDuration >= tuning.stoppedDuration { stopped = true }
-        } else {
-            lowSpeedDuration = 0
-            if speedKmh > tuning.stoppedSpeedKmh + 1 { stopped = false }
-        }
-        recentAcceleration += (max(0, filtered) - recentAcceleration) * blend(dt, timeConstant: 0.8)
-        didDetectLift = !stopped && recentAcceleration > 1.2 && rawAcceleration < 0.15 && state.estimatedThrottle > 0.35
-        if didDetectLift { liftRemaining = 0.6 }
-        liftRemaining = max(0, liftRemaining - dt)
-        if filtered > 0.3 { accelerating = true }
-        if filtered < 0.12 { accelerating = false }
-        var targetThrottle = accelerating ? max(0, filtered - 0.12) / 4 : 0
-        if accelerating { targetThrottle += max(0, jerk) * 0.008 + min(0.06, speedKmh / 2000) }
-        if stopped || liftRemaining > 0 || gpsAge > tuning.gpsHoldDuration { targetThrottle = 0 }
-        targetThrottle = min(1, targetThrottle * tuning.throttleSensitivity)
-        let throttleTime = liftRemaining > 0 ? 0.08 : tuning.throttleSmoothing
-        let throttle = state.estimatedThrottle + (targetThrottle - state.estimatedThrottle) * blend(dt, timeConstant: throttleTime)
-        let brakeTarget = stopped ? 0 : min(1, max(0, -filtered - 0.25) / 5)
-        let brake = state.brakeInput + (brakeTarget - state.brakeInput) * blend(dt, timeConstant: 0.2)
-        state = VehicleState(speedKmh: speedKmh, accelerationMs2: rawAcceleration,
-                             smoothedAccelerationMs2: filtered, jerkMs3: jerk,
-                             estimatedThrottle: stopped ? 0 : throttle, brakeInput: brake,
-                             detectedStopped: stopped)
+        } else { lowSpeedDuration = 0 }
+        throttleEstimator.update(acceleration: filteredAcceleration, rawAcceleration: rawAcceleration,
+                                 jerk: filteredJerk, speedKmh: speed, stationary: stopped, dt: dt, tuning: tuning)
+        didDetectLift = throttleEstimator.didDetectLift
+        let brakeTarget = stopped ? 0 : min(1, max(0, -filteredAcceleration - 0.25) / 5)
+        let brake = state.brakeInput + (brakeTarget - state.brakeInput) * (1 - exp(-dt / 0.2))
+        state = VehicleState(speedKmh: speed, accelerationMs2: rawAcceleration,
+                             smoothedAccelerationMs2: filteredAcceleration, jerkMs3: filteredJerk,
+                             estimatedThrottle: throttleEstimator.filteredThrottle, brakeInput: brake,
+                             detectedStopped: stopped, gpsSpeedKmh: location?.speedKmh,
+                             predictedSpeedKmh: speed, rawEstimatedThrottle: throttleEstimator.rawThrottle,
+                             gpsSpeedAccuracy: location?.speedAccuracy, isGpsValid: gpsFresh,
+                             didDetectThrottleLift: didDetectLift)
         return state
-    }
-
-    private func blend(_ dt: Double, timeConstant: Double) -> Double {
-        1 - exp(-dt / max(0.02, timeConstant.isFinite ? timeConstant : 0.3))
     }
 }

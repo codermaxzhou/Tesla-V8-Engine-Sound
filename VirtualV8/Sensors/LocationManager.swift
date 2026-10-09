@@ -26,7 +26,7 @@ import Observation
         if manager == nil {
             let manager = CLLocationManager()
             manager.delegate = self
-            manager.desiredAccuracy = kCLLocationAccuracyBest
+            manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
             manager.distanceFilter = kCLDistanceFilterNone
             manager.activityType = .automotiveNavigation
             manager.pausesLocationUpdatesAutomatically = false

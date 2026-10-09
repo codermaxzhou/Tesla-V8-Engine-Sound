@@ -4,6 +4,7 @@ struct TachometerView: View {
     let rpm: Double
     let normalizedRPM: Double
     let mode: EngineOperatingMode
+    var profile: EngineProfile = .americanV8
 
     var body: some View {
         ZStack {
@@ -11,13 +12,13 @@ struct TachometerView: View {
                 .stroke(.white.opacity(0.12), style: StrokeStyle(lineWidth: 20, lineCap: .round))
                 .rotationEffect(.degrees(90))
             Circle().trim(from: 0.12, to: 0.12 + 0.76 * normalizedRPM)
-                .stroke(rpm >= 6000 ? Color.red : Color.orange,
+                .stroke(rpm >= profile.redlineRPM - 500 ? Color.red : Color.orange,
                         style: StrokeStyle(lineWidth: 20, lineCap: .round))
                 .rotationEffect(.degrees(90))
             VStack(spacing: 8) {
                 Text(rpm, format: .number.precision(.fractionLength(0)))
                     .font(.system(size: 54, weight: .bold, design: .rounded)).monospacedDigit()
-                Text("RPM / 6,500").font(.caption).foregroundStyle(.secondary)
+                Text("RPM / \(Int(profile.redlineRPM).formatted())").font(.caption).foregroundStyle(.secondary)
                 Text(mode.label).font(.headline).foregroundStyle(.orange)
             }
         }

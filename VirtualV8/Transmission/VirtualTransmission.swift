@@ -80,7 +80,7 @@ struct VirtualTransmission {
         let speed = vehicle.speedKmh
         // Always shift before the soft limiter's cut can hold RPM below the strategy threshold.
         let upRPM = min(configuration.softLimiterRPM - 100,
-                        upshiftRPM(throttle: throttle, mode: mode))
+                        upshiftRPM(throttle: throttle, mode: mode) * configuration.redlineScale)
         let wheelRPM = rpm(forSpeedKmh: speed, gear: gear)
         let downRPM = (mode == .comfort ? 1100 + 400 * throttle
             : mode == .sport ? 1500 + 500 * throttle : 2000 + 600 * throttle) * tuning.downshiftAggressiveness

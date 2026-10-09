@@ -3,6 +3,95 @@ import Observation
 @testable import VirtualV8
 
 final class SimulationControllerTests: XCTestCase {
+    @MainActor func testProfileIDsUsedBySelectionRowsUpdateAndPersistAllProfiles() async {
+        let domain = "VirtualV8.profile-picker.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let controller = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
+        for profile in EngineProfile.available {
+            XCTAssertTrue(controller.selectProfile(id: profile.id))
+            XCTAssertEqual(controller.profile.id, profile.id)
+            XCTAssertEqual(controller.audio.profile.id, profile.id)
+            let restored = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
+            XCTAssertEqual(restored.profile.id, profile.id)
+        }
+        let selected = controller.profile
+        XCTAssertFalse(controller.selectProfile(id: "missing-profile"))
+        XCTAssertEqual(controller.profile, selected)
+        controller.startEngine()
+        XCTAssertFalse(controller.selectProfile(id: EngineProfile.americanV8.id))
+        XCTAssertEqual(controller.profile, selected)
+        controller.stopEngine()
+        XCTAssertTrue(controller.selectProfile(id: EngineProfile.americanV8.id))
+        XCTAssertEqual(controller.profile, .americanV8)
+    }
+
+    @MainActor func testClassicProfilePersistenceSwitchingAndIdle() async {
+        let domain = "VirtualV8.classics.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let controller = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
+        for profile in EngineProfile.classics {
+            controller.selectProfile(profile)
+            let restored = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
+            XCTAssertEqual(restored.profile, profile)
+            XCTAssertEqual(restored.audio.profile, profile)
+            controller.startEngine(); controller.advance(seconds: 3)
+            XCTAssertEqual(controller.engine.rpm, profile.idleRPM, accuracy: 2)
+            controller.selectProfile(.americanV8)
+            XCTAssertEqual(controller.profile, profile, "Running engine must block profile switching")
+            controller.stopEngine()
+        }
+        controller.selectProfile(.americanV8); controller.startEngine(); controller.advance(seconds: 3)
+        XCTAssertEqual(controller.engine.rpm, 750, accuracy: 2)
+    }
+
+    @MainActor func testBMWScenarioReachesHighRevRangeAndReturnsToIdle() async {
+        let controller = SimulationController(automaticallyTicks: false)
+        controller.selectProfile(.bmwS65)
+        controller.drivingMode = .track
+        controller.startDemo()
+        var maximumRPM = 0.0; var upshifts = 0; var downshifts = 0; var wasShifting = false
+        for _ in 0..<60 * 44 {
+            controller.advance(seconds: 1.0 / 60)
+            maximumRPM = max(maximumRPM, controller.engine.rpm)
+            if controller.transmission.isShifting && !wasShifting {
+                if controller.transmission.shiftType == .upshift { upshifts += 1 }
+                if controller.transmission.shiftType == .downshift { downshifts += 1 }
+            }
+            wasShifting = controller.transmission.isShifting
+            XCTAssertTrue((1...8).contains(controller.transmission.currentGear))
+            XCTAssertLessThanOrEqual(controller.engine.rpm, controller.profile.hardLimiterRPM)
+        }
+        XCTAssertGreaterThan(maximumRPM, 7500, "Track shifts should allow the S65's high-RPM sound bands")
+        XCTAssertGreaterThanOrEqual(upshifts, 2); XCTAssertGreaterThanOrEqual(downshifts, 2)
+        XCTAssertEqual(controller.operatingMode, .idle)
+        XCTAssertEqual(controller.engine.rpm, 800, accuracy: 2)
+    }
+
+    @MainActor func testEngineProfileSelectionPersistenceAndRunningGuard() async {
+        let domain = "VirtualV8.profile.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let controller = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
+        XCTAssertEqual(controller.profile, .americanV8)
+        controller.selectProfile(.bmwS65)
+        XCTAssertEqual(controller.audio.profile, .bmwS65)
+        controller.startEngine()
+        controller.advance(seconds: 3)
+        XCTAssertEqual(controller.engine.rpm, 800, accuracy: 2)
+        controller.selectProfile(.americanV8)
+        XCTAssertEqual(controller.profile, .bmwS65, "Running engine must keep its audio/profile together")
+        let restored = SimulationController(automaticallyTicks: false, settingsDefaults: defaults)
+        XCTAssertEqual(restored.profile, .bmwS65)
+        controller.stopEngine()
+        controller.selectProfile(.americanV8)
+        controller.startEngine()
+        controller.advance(seconds: 3)
+        XCTAssertEqual(controller.engine.rpm, 750, accuracy: 2)
+        XCTAssertEqual(controller.audio.profile, .americanV8)
+    }
+
     @MainActor func testScreenAwakePolicyTracksEngineInputAndForeground() async {
         let controller = SimulationController(automaticallyTicks: false)
         XCTAssertFalse(controller.shouldKeepScreenAwake)

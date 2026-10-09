@@ -7,7 +7,7 @@ struct DrivingDashboard: View {
         VStack(spacing: 16) {
             TachometerView(rpm: controller.engine.rpm,
                            normalizedRPM: controller.engine.normalizedRPM,
-                           mode: controller.operatingMode)
+                           mode: controller.operatingMode, profile: controller.profile)
             HStack(spacing: 20) {
                 metric("km/h", value: String(format: "%.0f", controller.vehicle.speedKmh))
                 metric("Gear", value: "\(controller.transmission.currentGear)")

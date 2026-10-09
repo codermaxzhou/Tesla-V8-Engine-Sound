@@ -10,11 +10,11 @@ struct DeveloperView: View {
             Section("Calibration") { CalibrationControlsView(controller: controller) }
             Section("Drive Logging") { DriveLoggingView(controller: controller) }
             Section("Recent History") {
-                Toggle("Show speed / throttle / RPM graphs", isOn: $showHistory).disabled(!controller.canCalibrate)
+                Toggle("Show latency graphs", isOn: $showHistory).disabled(!controller.canCalibrate)
                 if showHistory { DriveHistoryView(logger: controller.logger) }
             }
             Section("Live State") {
-                LabeledContent("Raw throttle", value: String(format: "%.3f", controller.vehicle.estimatedThrottle))
+                LabeledContent("Raw throttle", value: String(format: "%.3f", controller.vehicle.rawEstimatedThrottle))
                 LabeledContent("Brake", value: String(format: "%.3f", controller.vehicle.brakeInput))
                 LabeledContent("Speed", value: String(format: "%.1f km/h", controller.vehicle.speedKmh))
                 LabeledContent("Acceleration", value: String(format: "%.2f m/s²", controller.vehicle.accelerationMs2))
@@ -32,12 +32,15 @@ struct DeveloperView: View {
             }
             Section("Sensors & Estimator") {
                 LabeledContent("Input mode", value: controller.inputMode.rawValue)
-                SensorTelemetryView(sensors: controller.sensors)
+                SensorTelemetryView(sensors: controller.sensors, inputEstimator: controller.inputEstimator)
             }
             Section("Other Sensor Settings") {
-                DisclosureGroup("Speed filtering & stopped detection") {
+                DisclosureGroup("Orientation & stopped detection") {
                     SensorTuningView(sensors: controller.sensors)
-                    Button("Relearn Forward Direction") { controller.sensors.resetCalibration() }
+                    Text("Secure the phone. Begin while parked, then gently accelerate straight. Collection starts at meaningful motion and takes 4 seconds. Have a passenger supervise; recalibrate after moving the mount.").font(.caption)
+                    Text(controller.sensors.estimator.calibration.status).font(.caption)
+                    Button("Calibrate Orientation") { controller.sensors.beginCalibration() }
+                    Button("Reset Orientation") { controller.sensors.resetCalibration() }
                 }.disabled(!controller.canCalibrate)
             }
             Section("Other Audio Controls") {

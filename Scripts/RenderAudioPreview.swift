@@ -3,13 +3,28 @@ import AVFoundation
 
 @main struct RenderAudioPreview {
     @MainActor static func main() throws {
-        guard (3...4).contains(CommandLine.arguments.count) else { throw CocoaError(.coderInvalidValue) }
+        guard (3...5).contains(CommandLine.arguments.count) else { throw CocoaError(.coderInvalidValue) }
         let assets = URL(fileURLWithPath: CommandLine.arguments[1])
         let output = URL(fileURLWithPath: CommandLine.arguments[2])
+        let amount = CommandLine.arguments.count >= 4 ? Double(CommandLine.arguments[3]) ?? 0.5 : 0.5
+        if CommandLine.arguments.count == 5 && CommandLine.arguments[4] == "--all-classics" {
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            for profile in EngineProfile.classics {
+                try render(profile: profile, assets: assets.appendingPathComponent(profile.audioFolder),
+                           output: output.appendingPathComponent(profile.id + "-demo.wav"), amount: amount)
+            }
+        } else {
+            let profile = CommandLine.arguments.count == 5 ? EngineProfile.available.first { $0.id == CommandLine.arguments[4] } ?? .americanV8 : .americanV8
+            try render(profile: profile, assets: assets, output: output, amount: amount)
+        }
+    }
+
+    @MainActor static func render(profile: EngineProfile, assets: URL, output: URL, amount: Double) throws {
         let controller = SimulationController(automaticallyTicks: false)
-        controller.drivingMode = .sport
-        let audio = EngineAudioEngine(outputMode: .offline, assetDirectory: assets)
-        if CommandLine.arguments.count == 4 { audio.tuning.backfireAmount = Double(CommandLine.arguments[3]) ?? 0.5 }
+        controller.selectProfile(profile)
+        controller.drivingMode = profile == .bmwS65 || EngineProfile.classics.contains(profile) ? .track : .sport
+        let audio = EngineAudioEngine(outputMode: .offline, assetDirectory: assets, profile: profile)
+        audio.tuning.backfireAmount = amount
         defer { audio.shutdown() }
         controller.startDemo()
         let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
@@ -36,6 +51,6 @@ import AVFoundation
         guard audio.errorMessage == nil, audio.fallbackAssets.isEmpty, peak > 0, peak < 1 else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        print("Rendered 44-second Sport demo; peak \(peak), \(audio.startCount) graph starts, \(audio.transientCount) events: \(output.path)")
+        print("Rendered 44-second \(profile.name) demo; peak \(peak), \(audio.startCount) graph starts, \(audio.transientCount) events: \(output.path)")
     }
 }

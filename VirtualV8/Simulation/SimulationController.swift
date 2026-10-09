@@ -21,9 +21,12 @@ final class SimulationController {
     let calibration: CalibrationSettings
     let logger = DriveLogger()
     private(set) var activeScenario: SimulationScenario?
+    var inputEstimator: VehicleStateEstimator { inputMode == .simulation && activeScenario?.isLatencyTest == true ? latencyScenario?.estimator ?? sensors.estimator : sensors.estimator }
     var scenarioDuration: Double { activeScenario?.duration ?? DemoSequence.duration }
     var canCalibrate: Bool { inputMode == .simulation || (vehicle.isStopped && vehicle.speedKmh < 2.5) }
-    let profile = EngineProfile.americanV8
+    private(set) var profile = EngineProfile.americanV8
+    @ObservationIgnored private let profileDefaults: UserDefaults?
+    static let profileStorageKey = "VirtualV8.engineProfile.v1"
     let phoneInput = PhoneSensorInputProvider()
     let simulationInput = SimulationInputProvider()
     var sensors: SensorInputController { phoneInput.sensors }
@@ -40,12 +43,18 @@ final class SimulationController {
     @ObservationIgnored private var virtualEngine = VirtualEngine()
     @ObservationIgnored private var virtualTransmission = VirtualTransmission()
     @ObservationIgnored private var previousLift = false
+    @ObservationIgnored private var latencyScenario: LatencyScenarioRunner?
     @ObservationIgnored private var applyingCalibration = false
 
     init(automaticallyTicks: Bool = true, audioOutput: EngineAudioEngine.OutputMode? = nil, settingsDefaults: UserDefaults? = nil, inputProvider: (any VehicleInputProvider)? = nil) {
+        profileDefaults = settingsDefaults
+        phoneInput.sensors.configurePersistence(settingsDefaults)
+        let selectedProfile = EngineProfile.available.first { $0.id == settingsDefaults?.string(forKey: Self.profileStorageKey) } ?? .americanV8
+        virtualEngine = VirtualEngine(configuration: selectedProfile)
         self.inputProvider = inputProvider
         calibration = CalibrationSettings(defaults: settingsDefaults)
-        audio = EngineAudioEngine(outputMode: audioOutput ?? (automaticallyTicks ? .device : .disabled))
+        audio = EngineAudioEngine(outputMode: audioOutput ?? (automaticallyTicks ? .device : .disabled), profile: selectedProfile)
+        profile = selectedProfile
         applyRuntimeCalibration()
         audio.onTuningChange = { [weak self] tuning in
             guard let self, !self.applyingCalibration else { return }
@@ -132,6 +141,27 @@ final class SimulationController {
     func startLogging() { guard canCalibrate else { return }; logger.start(); record("Logging started") }
     func stopLogging() { logger.stop(); record("Logging stopped") }
 
+    /// UI selection uses catalog IDs rather than hashing the entire profile value.
+    @discardableResult func selectProfile(id: String) -> Bool {
+        guard canCalibrate, !engine.isRunning,
+              let selected = EngineProfile.available.first(where: { $0.id == id }) else { return false }
+        selectProfile(selected)
+        return profile.id == id
+    }
+
+    func selectProfile(_ selected: EngineProfile) {
+        guard canCalibrate, !engine.isRunning, selected != profile,
+              EngineProfile.available.contains(selected) else { return }
+        profile = selected
+        virtualEngine = VirtualEngine(configuration: selected)
+        virtualTransmission.reset()
+        audio.selectProfile(selected)
+        applyRuntimeCalibration()
+        publishState()
+        profileDefaults?.set(selected.id, forKey: Self.profileStorageKey)
+        record("Engine profile: \(selected.name)")
+    }
+
     func startEngine() {
         guard !engine.isRunning else { return }
         virtualEngine.start()
@@ -190,12 +220,14 @@ final class SimulationController {
     func startScenario(_ scenario: SimulationScenario) {
         selectInputMode(.simulation)
         stopEngine(); startEngine()
+        latencyScenario = scenario.isLatencyTest ? LatencyScenarioRunner(tuning: sensors.tuning) : nil
         activeScenario = scenario; demoElapsed = 0; isDemoRunning = true
         demoStage = "\(scenario.rawValue) — starting engine"
         record("Scenario started: \(scenario.rawValue)")
     }
 
     func cancelDemo() {
+        latencyScenario = nil
         guard isDemoRunning else { return }
         isDemoRunning = false
         demoStage = activeScenario == nil ? "Demo cancelled — manual control" : "Scenario cancelled — manual control"
@@ -218,7 +250,12 @@ final class SimulationController {
         if isDemoRunning {
             demoElapsed = min(scenarioDuration, demoElapsed + deltaTime)
             let frame = activeScenario?.frame(at: demoElapsed) ?? DemoSequence.frame(at: demoElapsed)
-            simulationInput.setInputs(speed: frame.speed, throttle: frame.throttle, brake: frame.brake)
+            if let scenario = activeScenario, scenario.isLatencyTest, latencyScenario != nil {
+                let state = latencyScenario!.update(scenario: scenario, dt: deltaTime, tuning: sensors.tuning)
+                simulationInput.setSensorState(state, lift: latencyScenario!.estimator.didDetectLift)
+            } else {
+                simulationInput.setInputs(speed: frame.speed, throttle: frame.throttle, brake: frame.brake)
+            }
             demoStage = frame.label
             if demoElapsed >= scenarioDuration - 1e-9 {
                 isDemoRunning = false
